@@ -1,0 +1,17 @@
+### Java ###
+# Compiled class file
+*.class
+
+# Package Files #
+*.jar
+*.jardesc
+
+# .
+.metadata
+.recommenders
+.classpath
+.project
+.settings
+bin
+
+!lib/**

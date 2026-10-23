@@ -1,0 +1,558 @@
+package fighting;
+
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.LinkedList;
+
+import command.CommandTable;
+import enumerate.Action;
+import enumerate.State;
+import image.Image;
+import input.KeyData;
+import manager.GraphicManager;
+import setting.GameSetting;
+import setting.LaunchSetting;
+import struct.AttackData;
+import struct.CharacterData;
+import struct.FrameData;
+import struct.Key;
+import styletrackers.CharacterStyleTracker;
+import styletrackers.RushdownTracker;
+import styletrackers.GrapplerTracker;
+import styletrackers.ZonerTracker;
+import util.StyleCSVLogger;
+import java.io.IOException;
+
+/**
+ * Processes matches and updates attack and character parameters.
+ */
+public class Fighting {
+
+	/**
+	 * The character's data of both characters<br>
+	 * Index 0 is P1, index 1 is P2.
+	 *
+	 * @see Character
+	 */
+	protected Character[] playerCharacters;
+
+	/**
+	 * The list of projectile data of both characters.
+	 *
+	 * @see LoopEffect
+	 */
+	protected Deque<LoopEffect> projectileDeque;
+
+	/**
+	 * The list of the input information of both characters.
+	 *
+	 * @see KeyData
+	 */
+	private Deque<KeyData> inputCommands;
+
+	/**
+	 * List of effects displayed when an attack hits, including uppercut effects.<br>
+	 * Index 0 is P1, index 1 is P2.
+	 *
+	 * @see HitEffect
+	 */
+	private LinkedList<LinkedList<HitEffect>> hitEffects;
+
+	/**
+	 * Class variable that manages key input and its corresponding actions.
+	 *
+	 * @see CommandTable
+	 */
+	protected CommandTable commandTable;
+
+	/** 
+	 * Style tracker for the character
+	 * 
+	 * @see CharacterStyleTracker
+	 */
+	protected CharacterStyleTracker styleTracker; 
+
+	/**
+	 * Style tracker for player 2 (P2)
+	 * @see CharacterStyleTracker
+	 */
+	protected CharacterStyleTracker styleTrackerP2;
+
+	/**
+	 * Class constructor.
+	 */
+	public Fighting() {
+		this.playerCharacters = new Character[2];
+		this.projectileDeque = new LinkedList<LoopEffect>();
+		this.inputCommands = new LinkedList<KeyData>();
+		this.commandTable = new CommandTable();
+		this.hitEffects = new LinkedList<LinkedList<HitEffect>>();
+	}
+	
+	public void processingRoundEnd(){
+		this.inputCommands.clear();
+		this.playerCharacters[0].setProcessedCommand(new LinkedList<Key>());
+		this.playerCharacters[1].setProcessedCommand(new LinkedList<Key>());
+		this.playerCharacters[0].setInputCommand(new LinkedList<Key>());
+		this.playerCharacters[1].setInputCommand(new LinkedList<Key>());
+		this.playerCharacters[0].resetEnergyCount();
+		this.playerCharacters[1].resetEnergyCount();
+	}
+	
+	/**
+	 * Initialize the lists containing P1 and P2 character data and effects.
+	 */
+	public void initialize() {
+		for (int i = 0; i < 2; i++) {
+			this.playerCharacters[i] = new Character();
+			this.playerCharacters[i].initialize(LaunchSetting.characterNames[i], i == 0);
+			this.hitEffects.add(new LinkedList<HitEffect>());
+			if(i == 0){
+				styleTracker = switch (LaunchSetting.characterNames[i]) {
+					case "GARNET" -> new RushdownTracker();
+					case "LUD" -> new GrapplerTracker();
+					case "NEZ" -> new ZonerTracker();
+					default -> null;
+				};
+			} 
+			else if(i == 1) {
+				styleTrackerP2 = switch (LaunchSetting.characterNames[i]) {
+					case "GARNET" -> new RushdownTracker();
+					case "LUD" -> new GrapplerTracker();
+					case "NEZ" -> new ZonerTracker();
+					default -> null;
+				};
+			}
+		}
+	}
+
+	/**
+	 * Process one frame of the match based on P1 and P2 input.<br>
+	 * Processing is performed in the following order:<br>
+	 * <ol>
+	 * <li>Perform actions based on key input</li>
+	 * <li>Process attack hit detection and update character parameters such as HP</li>
+	 * <li>Update attack parameters</li>
+	 * <li>Update character states</li>
+	 * </ol>
+	 *
+	 * @param currentFrame
+	 *            The current frame.
+	 * @param keyData
+	 *            P1 and P2 input. Index 0 is P1; index 1 is P2.
+	 */
+	public void processingFight(int currentFrame, KeyData keyData) {
+		// 1. Perform actions based on the input keys.
+		processingCommands(keyData);
+		// 2. Process hit detection.
+		calculationHit(currentFrame);
+		// 3. Update attack parameters.
+		updateAttackParameter();
+		// 4. Update character states.
+		updateCharacter();
+		// 5. Update style trackers
+		if (styleTracker != null) {
+			styleTracker.update(playerCharacters[0], playerCharacters[1]);
+		}
+		if (styleTrackerP2 != null) {
+			styleTrackerP2.update(playerCharacters[1], playerCharacters[0]);
+		}
+
+	}
+
+	/**
+	 * Perform actions based on key input.
+	 *
+	 * @param currentFrame
+	 *            The current frame.
+	 * @param keyData
+	 *            P1 and P2 input.<br>
+	 *            Index 0 is P1, index 1 is P2.
+	 */
+	protected void processingCommands(KeyData keyData) {
+		this.inputCommands.addLast(keyData);
+
+		// If the list exceeds INPUT_LIMIT, remove the oldest entry.
+		while (this.inputCommands.size() > GameSetting.INPUT_LIMIT) {
+			this.inputCommands.removeFirst();
+		}
+
+		// Perform the action.
+		for (int i = 0; i < 2; i++) {
+			if (!this.inputCommands.isEmpty()) {
+				Action executeAction = this.commandTable.interpretationCommandFromKeyData(this.playerCharacters[i],
+						this.inputCommands);
+				if (ableAction(this.playerCharacters[i], executeAction)) {
+					this.playerCharacters[i].runAction(executeAction, true);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Process attack hit detection and update character parameters such as health.
+	 *
+	 * @param currentFrame
+	 *            The current frame.
+	 */
+	protected void calculationHit(int currentFrame) {
+		boolean[] isHit = { false, false };
+
+		// Process projectiles.
+		int dequeSize = this.projectileDeque.size();
+		for (int i = 0; i < dequeSize; i++) {
+			LoopEffect projectile = this.projectileDeque.removeFirst();
+			int opponentIndex = projectile.getAttack().isPlayerNumber() ? 1 : 0;
+
+			if (detectionHit(this.playerCharacters[opponentIndex], projectile.getAttack())) {
+				int myIndex = opponentIndex == 0 ? 1 : 0;
+				this.playerCharacters[opponentIndex].hitAttack(this.playerCharacters[myIndex], projectile.getAttack(),
+						currentFrame);
+			} else {
+				this.projectileDeque.addLast(projectile);
+			}
+		}
+		
+		// Process normal attacks.
+		for (int i = 0; i < 2; i++) {
+			int opponentIndex = i == 0 ? 1 : 0;
+			Attack attack = this.playerCharacters[i].getAttack();
+
+			if (detectionHit(this.playerCharacters[opponentIndex], attack)) {
+				isHit[i] = true;
+				// Update parameters such as HP.
+				this.playerCharacters[opponentIndex].hitAttack(this.playerCharacters[i], attack, currentFrame);
+			}
+		}
+
+		// Process effects only when a window has been created.
+		for (int i = 0; i < 2; i++) {
+			if (this.playerCharacters[i].getAttack() != null) {
+				// Set the effect corresponding to the current combo.
+				int comboState = Math.max(this.playerCharacters[i].getHitCount() - 1, 0);
+				// Use the fourth-hit effect for combos of four or more hits.
+				comboState = Math.min(comboState, 3);
+
+				Image[] effect = GraphicManager.getInstance().getHitEffectImageContaier()[comboState];
+				this.hitEffects.get(i).add(new HitEffect(this.playerCharacters[i].getAttack(), effect, isHit[i]));
+
+				// Process uppercut attacks.
+				if (playerCharacters[i].getAction() == Action.STAND_F_D_DFB) {
+					Image[] upper = GraphicManager.getInstance().getUpperImageContainer()[i];
+					Motion motion = this.playerCharacters[i].getMotionList().get(Action.STAND_F_D_DFB.ordinal());
+
+					if (this.playerCharacters[i].startActive(motion)) {
+						this.hitEffects.get(i).add(new HitEffect(this.playerCharacters[i].getAttack(), upper, true, false));
+					}
+				}
+			}
+
+			if (isHit[i]) {
+				this.playerCharacters[i].setHitConfirm(true);
+				this.playerCharacters[i].destroyAttackInstance();
+			}
+
+			if (!playerCharacters[i].isComboValid(currentFrame) || !playerCharacters[i].isInHitstun()) {
+				playerCharacters[i].setHitCount(0);
+			}
+		}
+	}
+
+	/**
+	 * Update attack parameters.
+	 */
+	protected void updateAttackParameter() {
+		// Updates the parameters of all of projectiles appearing in the stage
+		int dequeSize = this.projectileDeque.size();
+		for (int i = 0; i < dequeSize; i++) {
+
+			LoopEffect projectile = this.projectileDeque.removeFirst();
+			if (projectile.getAttack().updateProjectileAttack()) {
+				projectile.update();
+				this.projectileDeque.addLast(projectile);
+			}
+		}
+
+		// Updates the parameters of all of attacks excepted projectile
+		// conducted by both characters
+		for (int i = 0; i < 2; ++i) {
+			if (this.playerCharacters[i].getAttack() != null) {
+				if (!this.playerCharacters[i].getAttack().update(this.playerCharacters[i])) {
+					this.playerCharacters[i].destroyAttackInstance();
+				}
+			}
+		}
+	}
+
+	/**
+	 * Update character states and effects.
+	 */
+	protected void updateCharacter() {
+		for (int i = 0; i < 2; ++i) {
+			// Updates each character.
+			this.playerCharacters[i].update();
+
+			if (this.playerCharacters[i].getAttack() != null) {
+				if (this.playerCharacters[i].getAttack().isProjectile()) {
+					Attack attack = this.playerCharacters[i].getAttack();
+					ArrayList<Image> projectileImage = GraphicManager.getInstance().getProjectileImageContainer();
+
+					if (this.playerCharacters[i].getAction() == Action.STAND_D_DF_FC) {
+						projectileImage = GraphicManager.getInstance().getUltimateAttackImageContainer();
+					}
+
+					Image[] temp = new Image[projectileImage.size()];
+					for (int j = 0; j < temp.length; j++) {
+						temp[j] = projectileImage.get(j);
+					}
+					
+					this.projectileDeque.addLast(new LoopEffect(attack, temp));
+					this.playerCharacters[i].destroyAttackInstance();
+				}
+			}
+
+			// Changes player's direction
+			if (playerCharacters[i].isControl()) {
+				playerCharacters[i].frontDecision(playerCharacters[i == 0 ? 1 : 0].getHitAreaCenterX());
+			}
+
+			// Updates the all of effects appearing in this stage
+			for (int j = 0; j < this.hitEffects.get(i).size(); j++) {
+				if (!this.hitEffects.get(i).get(j).update()) {
+					this.hitEffects.get(i).remove(j);
+					--j;
+				}
+			}
+		}
+		// Runs pushing.
+		detectionPush();
+		// Runs collision of first and second character.
+		detectionFusion();
+		// Runs effect when character's are in the end of stage.
+		decisionEndStage();
+	}
+
+	/**
+	 * Push the opponent based on the horizontal speeds of the P1 and P2 characters.
+	 */
+	protected void detectionPush() {
+		if (isCollision()) {
+			int p1SpeedX = Math.abs(this.playerCharacters[0].getSpeedX());
+			int p2SpeedX = Math.abs(this.playerCharacters[1].getSpeedX());
+
+			if (p1SpeedX > p2SpeedX) {
+				this.playerCharacters[1]
+						.moveX(this.playerCharacters[0].getSpeedX() - this.playerCharacters[1].getSpeedX());
+			} else if (p1SpeedX < p2SpeedX) {
+				this.playerCharacters[0]
+						.moveX(this.playerCharacters[1].getSpeedX() - this.playerCharacters[0].getSpeedX());
+			} else {
+				this.playerCharacters[0].moveX(this.playerCharacters[1].getSpeedX());
+				this.playerCharacters[1].moveX(this.playerCharacters[0].getSpeedX());
+			}
+		}
+	}
+
+	/**
+	 * If P1 and P2 overlap, update their coordinates so they no longer overlap.
+	 */
+	protected void detectionFusion() {
+		if (isCollision()) {
+			int direction = 0;
+
+			// If first player is left
+			if (this.playerCharacters[0].getHitAreaCenterX() < this.playerCharacters[1].getHitAreaCenterX()) {
+				direction = 1;
+				// If second player is left
+			} else if (this.playerCharacters[0].getHitAreaCenterX() > this.playerCharacters[1].getHitAreaCenterX()) {
+				direction = -1;
+			} else {
+				if (this.playerCharacters[0].isFront()) {
+					direction = 1;
+				} else {
+					direction = -1;
+				}
+			}
+			this.playerCharacters[0].moveX(-direction * 2);
+			this.playerCharacters[1].moveX(direction * 2);
+		}
+	}
+
+	/**
+	 * Check whether the P1 and P2 characters are colliding.
+	 *
+	 * @return {@code true} if the characters are colliding; {@code false} otherwise
+	 */
+	private boolean isCollision() {
+		return this.playerCharacters[0].getHitAreaLeft() <= this.playerCharacters[1].getHitAreaRight()
+				&& this.playerCharacters[0].getHitAreaTop() <= this.playerCharacters[1].getHitAreaBottom()
+				&& this.playerCharacters[0].getHitAreaRight() >= this.playerCharacters[1].getHitAreaLeft()
+				&& this.playerCharacters[0].getHitAreaBottom() >= this.playerCharacters[1].getHitAreaTop();
+	}
+
+	/**
+	 * Update character coordinates to keep them within the stage boundaries.
+	 */
+	protected void decisionEndStage() {
+		for (int i = 0; i < 2; ++i) {
+			// If action is down, character will be rebound.
+			if (playerCharacters[i].getHitAreaRight() > GameSetting.STAGE_WIDTH) {
+				if (playerCharacters[i].getAction() == Action.DOWN) {
+					playerCharacters[i].reversalSpeedX();
+				}
+				playerCharacters[i].moveX(-playerCharacters[i].getHitAreaRight() + GameSetting.STAGE_WIDTH);
+
+			} else if (playerCharacters[i].getHitAreaLeft() < 0) {
+				if (playerCharacters[i].getAction() == Action.DOWN) {
+					playerCharacters[i].reversalSpeedX();
+				}
+				playerCharacters[i].moveX(-playerCharacters[i].getHitAreaLeft());
+			}
+		}
+	}
+
+	/**
+	 * Check whether the next action can be performed.
+	 *
+	 * @param character
+	 *            Character instance that will perform the action.
+	 * @param nextAction
+	 *            The next action to perform.
+	 *
+	 * @return {@code true} if the action can be performed; {@code false} otherwise
+	 *
+	 * @see Character
+	 * @see Action
+	 */
+	protected boolean ableAction(Character character, Action nextAction) {
+		Motion nextMotion = character.getMotionList().get(nextAction.ordinal());
+		Motion nowMotion = character.getMotionList().get(character.getAction().ordinal());
+
+		if (character.getEnergy() < -nextMotion.getAttackStartAddEnergy()) {
+			return false;
+		} else if (character.isControl()) {
+			return true;
+		} else {
+			boolean checkFrame = nowMotion.getCancelAbleFrame() <= nowMotion.getFrameNumber()
+					- character.getRemainingFrame();
+			boolean checkAction = nowMotion.getCancelAbleMotionLevel() >= nextMotion.getMotionLevel();
+
+			return character.isHitConfirm() && checkFrame && checkAction;
+		}
+	}
+
+	/**
+	 * Check whether the attack hit the opponent.
+	 *
+	 * @param opponent
+	 *            Opponent character.
+	 * @param attack
+	 *            Attack performed by this character.
+	 * @return {@code true} if the attack hit; {@code false} otherwise
+	 *
+	 * @see Character
+	 * @see Attack
+	 */
+	protected boolean detectionHit(Character opponent, Attack attack) {
+		if (attack == null || opponent.getState() == State.DOWN) {
+			return false;
+		} else if (opponent.getHitAreaLeft() <= attack.getCurrentHitArea().getRight()
+				&& opponent.getHitAreaRight() >= attack.getCurrentHitArea().getLeft()
+				&& opponent.getHitAreaTop() <= attack.getCurrentHitArea().getBottom()
+				&& opponent.getHitAreaBottom() >= attack.getCurrentHitArea().getTop()) {
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	/**
+	 * Return the array containing P1 and P2 character data.
+	 *
+	 * @return the array containing P1 and P2 character data
+	 */
+	public Character[] getCharacters() {
+		return this.playerCharacters.clone();
+	}
+
+	public CharacterStyleTracker getCharacterStyleTracker() {
+		return this.styleTracker;
+	}
+
+	/**
+	 * Returns the style tracker for player 2 (P2), if any.
+	 */
+	public CharacterStyleTracker getCharacterStyleTrackerP2() {
+		return this.styleTrackerP2;
+	}
+	
+
+	/**
+	 * Create frame data containing game information for the current frame.<br>
+	 * It contains both characters' data, the current frame and round, a list of projectile data, and both characters' key data.
+	 *
+	 * @param nowFrame
+	 *            The current frame.
+	 * @param round
+	 *            The current round.
+	 *
+	 * @return frame data containing game information for the current frame
+	 *
+	 * @see KeyData
+	 * @see FrameData
+	 */
+	public FrameData createFrameData(int nowFrame, int round) {
+		CharacterData[] characterData = new CharacterData[] { new CharacterData(playerCharacters[0]),
+				new CharacterData(playerCharacters[1]) };
+		
+		Deque<AttackData> newAttackDeque = new LinkedList<AttackData>();
+		for (LoopEffect loopEffect : this.projectileDeque) {
+			newAttackDeque.addLast(new AttackData(loopEffect.getAttack()));
+		}
+
+		return new FrameData(characterData, nowFrame, round, newAttackDeque);
+	}
+
+	/**
+	 * Initialize character data and clear lists and queues at the start of a round.
+	 */
+	public void initRound() {
+		for (int i = 0; i < 2; i++) {
+			this.playerCharacters[i].roundInit();
+			this.hitEffects.get(i).clear();
+		}
+
+		this.projectileDeque.clear();
+		this.inputCommands.clear();
+
+		if (styleTracker != null) {
+			styleTracker.reset();
+		}
+		if (styleTrackerP2 != null) {
+			styleTrackerP2.reset();
+		}
+	}
+
+	/**
+	 * Return the effect lists for P1 and P2.
+	 *
+	 * @return the effect lists for P1 and P2
+	 */
+	public LinkedList<LinkedList<HitEffect>> getHitEffectList() {
+		return new LinkedList<LinkedList<HitEffect>>(this.hitEffects);
+	}
+
+	/**
+	 * Returns the list of projectile data of both characters.
+	 *
+	 * @return the list of projectile data of both characters
+	 */
+	public Deque<LoopEffect> getProjectileDeque() {
+		return new LinkedList<LoopEffect>(this.projectileDeque);
+	}
+
+	public void close(){
+		for (Character character: this.getCharacters())
+			character.close();
+	}
+}
