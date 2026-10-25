@@ -12,7 +12,7 @@ import struct.GameData;
 import struct.Key;
 import struct.MotionData;
 
-public class MctsAiZoning implements AIInterface {
+public class MctsAi23i implements AIInterface {
    private Simulator simulator;
    private Key key;
    private CommandCenter commandCenter;
@@ -142,6 +142,6 @@ public class MctsAiZoning implements AIInterface {
       this.oppCharacter = frameData.getCharacter(!this.playerNumber);
    }
 
-   public void getNonDelayFrameData(FrameData fd) {
+   public void getInformation(FrameData arg0) {
    }
 }

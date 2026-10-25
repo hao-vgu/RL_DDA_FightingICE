@@ -1,3 +1,0 @@
-The one from Github project is around 2 years and 8 months older than the decopmpiled one.
-Despite this, the functionailty is identical, as only the debug printing codes were removed, and 
-some of the constants like FRAME-AHEAD, UCT-TIME were replaced with the value assigned to the constant.
